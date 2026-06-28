@@ -1,11 +1,13 @@
 // ==UserScript==
 // @name         YouTube Recommendation & Content Blocker
-// @namespace    https://github.com/Stormwindsky/YouTube-Recommendation-and-Content-Blocker
-// @version      1.0
-// @description  Removes specific YouTubers from recommendations and automatically redirects away if you accidentally visit their videos or channels.
+// @namespace    https://github.com/Stormwindsky
+// @version      1.1
+// @description  Removes specific YouTubers. Manage list via the Userscript extension menu command.
 // @author       Stormwindsky
 // @match        https://www.youtube.com/*
-// @grant        none
+// @grant        GM_registerMenuCommand
+// @grant        GM_setValue
+// @grant        GM_getValue
 // @run-at       document-start
 // @license      CC0 1.0 Universal
 // ==/UserScript==
@@ -13,31 +15,36 @@
 (function() {
     'use strict';
 
-    // --- CONFIGURATION ---
-    // Easily add or remove channels here.
-    // You can use the @username, the channel ID, or words that appear in their channel links.
-    const BLOCKED_TARGETS = [
+    // --- INITIAL CONFIGURATION ---
+    const DEFAULT_BLOCKED = [
         '@RickAstleyYT',
         'UCuAXFkgsw1L7xaCfnd5JJOw'
     ];
-    // ---------------------
 
-    // Selectors for YouTube video blocks/containers across the site
+    // Load the list from the extension's secure storage
+    function getBlockedTargets() {
+        let stored = GM_getValue('yt_blocked_channels', null);
+        if (!stored) {
+            GM_setValue('yt_blocked_channels', JSON.stringify(DEFAULT_BLOCKED));
+            return DEFAULT_BLOCKED;
+        }
+        return JSON.parse(stored);
+    }
+
+    // YouTube selectors to hide videos
     const VIDEO_CONTAINERS = [
-        'ytd-rich-item-renderer',      // Homepage videos
-        'ytd-video-renderer',          // Search results
-        'ytd-compact-video-renderer',  // Sidebar / Watch next recommendations
-        'ytd-grid-video-renderer'      // Grid layouts (tabs, etc.)
+        'ytd-rich-item-renderer',      // Homepage
+        'ytd-video-renderer',          // Search
+        'ytd-compact-video-renderer',  // Sidebar
+        'ytd-grid-video-renderer'      // Grids
     ].join(',');
 
-    // Function to handle redirection if you are on a blocked channel or video
+    // Redirect if on a blocked channel or video
     function redirectIfBlocked() {
+        const BLOCKED_TARGETS = getBlockedTargets();
         const currentUrl = window.location.href;
-
-        // 1. Check if we are currently on a blocked channel page
         const isOnBlockedChannel = BLOCKED_TARGETS.some(target => currentUrl.includes(target));
 
-        // 2. Check if we are watching a video from a blocked channel
         let isOnBlockedVideo = false;
         const channelLinksInWatchPage = document.querySelectorAll('ytd-watch-metadata a[href*="/@"], ytd-watch-metadata a[href*="/channel/"]');
 
@@ -48,7 +55,6 @@
             }
         });
 
-        // If blocked, go back in history, or fallback to YouTube home page if there's no history
         if (isOnBlockedChannel || isOnBlockedVideo) {
             if (document.referrer && document.referrer.includes('youtube.com')) {
                 window.history.back();
@@ -58,8 +64,9 @@
         }
     }
 
-    // Function to hide recommendations from the feed
+    // Hide videos from blocked channels
     function blockVideos() {
+        const BLOCKED_TARGETS = getBlockedTargets();
         const channelLinks = document.querySelectorAll('a[href*="/@"], a[href*="/channel/"], a[href*="/c/"]');
 
         channelLinks.forEach(link => {
@@ -77,25 +84,73 @@
         });
     }
 
-    // Run the script continuously using a MutationObserver to catch dynamic page changes
+    // --- REGISTER COMMANDS IN THE EXTENSION MENU ---
+    GM_registerMenuCommand("➕ Add a block", () => {
+        let BLOCKED_TARGETS = getBlockedTargets();
+        let val = prompt("Enter the @username or channel ID to block:");
+        if (val) {
+            val = val.trim();
+            if (val && !BLOCKED_TARGETS.includes(val)) {
+                BLOCKED_TARGETS.push(val);
+                GM_setValue('yt_blocked_channels', JSON.stringify(BLOCKED_TARGETS));
+                alert(val + " has been added to the list.");
+                blockVideos();
+                redirectIfBlocked();
+            }
+        }
+    });
+
+    GM_registerMenuCommand("❌ Remove a block", () => {
+        let BLOCKED_TARGETS = getBlockedTargets();
+        if (BLOCKED_TARGETS.length === 0) {
+            alert("No channels in the blocklist.");
+            return;
+        }
+
+        let message = "Select the number of the block to remove:\n\n";
+        BLOCKED_TARGETS.forEach((target, index) => {
+            message += (index + 1) + ". " + target + "\n";
+        });
+
+        let choice = prompt(message);
+        if (choice) {
+            let idx = parseInt(choice.trim(), 10) - 1;
+            if (!isNaN(idx) && idx >= 0 && idx < BLOCKED_TARGETS.length) {
+                let removed = BLOCKED_TARGETS.splice(idx, 1);
+                GM_setValue('yt_blocked_channels', JSON.stringify(BLOCKED_TARGETS));
+                alert(removed[0] + " has been removed from the list. Reloading page...");
+                window.location.reload();
+            } else {
+                alert("Invalid number.");
+            }
+        }
+    });
+
+    GM_registerMenuCommand("📋 View list", () => {
+        let BLOCKED_TARGETS = getBlockedTargets();
+        if (BLOCKED_TARGETS.length === 0) {
+            alert("The list is empty.");
+        } else {
+            alert("Currently blocked channels:\n\n" + BLOCKED_TARGETS.join("\n"));
+        }
+    });
+
+    // --- VIDEO MONITORING AND UPDATES ---
+    setInterval(() => {
+        blockVideos();
+        redirectIfBlocked();
+    }, 500);
+
     const observer = new MutationObserver(() => {
         blockVideos();
         redirectIfBlocked();
     });
 
-    // Start watching the page for changes once the body is ready
-    const initInterval = setInterval(() => {
-        if (document.body) {
-            clearInterval(initInterval);
+    if (document.body) {
+        observer.observe(document.body, { childList: true, subtree: true });
+    } else {
+        window.addEventListener('DOMContentLoaded', () => {
             observer.observe(document.body, { childList: true, subtree: true });
-            blockVideos();
-            redirectIfBlocked();
-        }
-    }, 100);
-
-    // Also monitor URL changes directly (YouTube is a Single Page Application and doesn't always trigger a full reload)
-    window.addEventListener('yt-navigate-start', () => {
-        // Delayed check to allow the new page metadata to load
-        setTimeout(redirectIfBlocked, 500);
-    });
+        });
+    }
 })();
